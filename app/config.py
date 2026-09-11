@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     owner_jid: str = Field(description="Allowed WhatsApp owner JID")
     owner_timezone: str = "Asia/Kolkata"
-    database_url: str = "sqlite:///data/bol_bachchan.db"
+    database_url: str = "sqlite:///data/sounce.db"
     neonize_session_path: Path = Path("data/neonize.db")
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.5-flash"
@@ -40,6 +40,29 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"
     google_token_path: Path = Path("data/google_calendar_token.json")
     google_oauth_redirect_port: int = Field(default=8765, ge=1024, le=65535)
+
+    # Durable inbox
+    message_lease_seconds: int = Field(default=300, ge=10)
+    message_max_attempts: int = Field(default=3, ge=1)
+    message_backoff_seconds: int = Field(default=10, ge=1)
+
+    # Reminder delivery
+    reminder_lease_seconds: int = Field(default=120, ge=10)
+    reminder_max_attempts: int = Field(default=5, ge=1)
+
+    # Calendar outbox
+    calendar_poll_seconds: int = Field(default=15, ge=1)
+    calendar_max_attempts: int = Field(default=6, ge=1)
+    calendar_backoff_seconds: int = Field(default=30, ge=1)
+
+    # Data lifecycle. Retention only removes raw messages, transcripts, media and
+    # settled jobs; memories, reminders and preferences are kept until erased.
+    retention_days: int = Field(default=365, ge=0)
+    retention_interval_hours: int = Field(default=24, ge=1)
+    export_dir: Path = Path("data/exports")
+
+    # Readiness
+    health_backlog_threshold: int = Field(default=500, ge=1)
 
     @field_validator("owner_jid")
     @classmethod

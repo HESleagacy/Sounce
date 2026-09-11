@@ -27,6 +27,7 @@ class NeonizeAdapter:
         self._owner_jid = owner_jid
         self._diagnostics = diagnostics
         self._handler: MessageHandler | None = None
+        self._connected = False
         self._raw_messages: OrderedDict[str, Any] = OrderedDict()
         self._client = NewClient(str(session_path))
 
@@ -36,6 +37,7 @@ class NeonizeAdapter:
 
         @self._client.event(ConnectedEv)
         def on_connected(_client: Any, _event: Any) -> None:
+            self._connected = True
             log.info("Connected to WhatsApp")
 
         @self._client.event(MessageEv)
@@ -89,10 +91,19 @@ class NeonizeAdapter:
             return None
 
     def connect(self) -> None:
-        self._client.connect()
+        try:
+            self._client.connect()
+        finally:
+            # connect() blocks for the life of the session, so reaching here at
+            # all means the link is down.
+            self._connected = False
 
     def disconnect(self) -> None:
+        self._connected = False
         self._client.disconnect()
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     @staticmethod
     def _build_jid(chat_jid: str) -> Any:
