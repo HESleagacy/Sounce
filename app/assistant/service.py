@@ -1,19 +1,38 @@
+"""Turns a user message into an executed decision.
+
+Policy for deterministic parsing
+--------------------------------
+Gemini decides. The regex helpers in this module are allowed to do exactly two
+things, and nothing else:
+
+1. **Fill gaps.** Complete fields the model left empty on an action it already
+   proposed, or rescue an unmistakably scheduling-shaped message the model
+   failed to act on. Every action they touch is in ``CONFIRM_ACTIONS``, so the
+   user still sees and approves the result before anything is written.
+2. **Stand in for an unavailable provider.** ``_fallback_decision`` runs only
+   when the provider raises.
+
+They may never write a memory or a preference. Those execute directly, without
+confirmation, and a regex is not strong enough evidence to mutate state the user
+will later rely on. An earlier version of this file short-circuited Gemini with
+a table of hardcoded Hinglish phrases that did exactly that; it made the demo
+look good and the system dishonest.
+"""
+
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from app.assistant.context import build_context
 from app.assistant.decision_engine import DecisionEngine, ExecutionResult
 from app.assistant.schemas import AssistantDecision, ProposedAction
 from app.domain.reminders import parse_natural_interval, parse_natural_schedule
+from app.domain.retrieval import score, tokenize
 from app.persistence.models import Message, User
 from app.persistence.repositories import Repository
 from app.providers.gemini import DecisionProvider
-
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +66,12 @@ class AssistantService:
         if provenance_response is not None:
             return ExecutionResult(provenance_response, 0)
         pending = repository.get_pending_action(user.id)
-        decision = self._canonical_text_decision(text, repository, user)
-        if decision is None:
-            context = build_context(repository, user, pending)
+        context = build_context(repository, user, pending, query=text)
+        try:
             decision = self._provider.interpret(text, context.as_prompt())
+        except Exception:
+            log.exception("Decision provider failed; falling back to deterministic parsing")
+            decision = self._fallback_decision(text, user)
         decision = self._normalize_timeline(text, decision, user)
         decision = self._normalize_reschedule(text, decision, repository, user)
         return self._decision_engine.execute(decision, repository, user, source_message, pending)
@@ -64,6 +85,8 @@ class AssistantService:
         source_message: Message,
     ) -> MediaResult:
         pending = repository.get_pending_action(user.id)
+        # A voice note has no text to rank against until it is transcribed, so
+        # the context falls back to recency for this turn.
         context = build_context(repository, user, pending)
         decision = self._provider.interpret_audio(audio, mime_type, context.as_prompt())
         execution = self._decision_engine.execute(decision, repository, user, source_message, pending)
@@ -90,7 +113,7 @@ class AssistantService:
         source_message: Message,
     ) -> MediaResult:
         pending = repository.get_pending_action(user.id)
-        context = build_context(repository, user, pending)
+        context = build_context(repository, user, pending, query=caption or filename)
         decision = self._provider.interpret_document(data, mime_type, filename, caption, context.as_prompt())
         if not caption:
             summary = decision.document_summary or "Document process ho gaya hai."
@@ -131,7 +154,8 @@ class AssistantService:
         reminders = repository.list_upcoming_reminders(user.id)
         parsed = parse_natural_schedule(text, user.timezone)
         actions = [
-            action for action in decision.proposed_actions
+            action
+            for action in decision.proposed_actions
             if action.action_type in {"create_reminder", "reschedule_reminder"}
         ]
         target_id = actions[0].reminder_id if actions else None
@@ -171,12 +195,7 @@ class AssistantService:
                 "action_type": "reschedule_reminder",
                 "reminder_id": target_id,
                 "recurrence_frequency": None,
-                "scheduled_at": actions[0].scheduled_at
-                or (
-                    parsed.isoformat()
-                    if parsed
-                    else None
-                ),
+                "scheduled_at": actions[0].scheduled_at or (parsed.isoformat() if parsed else None),
             }
         )
         return decision.model_copy(
@@ -188,94 +207,45 @@ class AssistantService:
         )
 
     @staticmethod
-    def _canonical_text_decision(
-        text: str,
-        repository: Repository,
-        user: User,
-    ) -> AssistantDecision | None:
-        lowered = text.lower()
-        quiet = re.search(r"(?:raat|night).*?\b(\d{1,2})(?::(\d{2}))?\b", lowered)
-        if quiet and re.search(r"reminder|yaad", lowered) and re.search(r"mat|nahi|dont|don't", lowered):
-            hour = int(quiet.group(1))
-            minute = int(quiet.group(2) or 0)
-            if hour < 12:
-                hour += 12
+    def _fallback_decision(text: str, user: User) -> AssistantDecision:
+        """Deterministic decision used only when the provider is unavailable.
+
+        Conservative by construction: it can propose a reminder or a timeline
+        event, both of which require confirmation, and otherwise it says it did
+        not understand. It never proposes a direct-execution action.
+        """
+        interval = parse_natural_interval(text, user.timezone)
+        if interval is not None and re.search(r"appointment|event|meeting|commitment", text, re.IGNORECASE):
+            starts_at, ends_at = interval
             return AssistantDecision(
-                intent="update_preference",
-                response=f"Theek hai, raat {hour % 12 or 12} baje ke baad reminders nahi bhejunga.",
+                intent="create_timeline_event",
+                response="Main abhi poori tarah samajh nahi paya, lekin yeh timeline mein add kar doon?",
                 proposed_actions=[
                     ProposedAction(
-                        action_type="update_preference",
-                        key="quiet_hours_start",
-                        value=f"{hour:02d}:{minute:02d}",
+                        action_type="create_timeline_event",
+                        title=text.strip()[:80],
+                        starts_at=starts_at.isoformat(),
+                        ends_at=ends_at.isoformat(),
                     )
                 ],
             )
-        if re.search(r"doctor|medical", lowered) and re.search(
-            r"ek\s+din\s+pehle|one\s+day\s+before|24\s*(?:hours?|ghante)", lowered
-        ):
+        scheduled_at = parse_natural_schedule(text, user.timezone)
+        if scheduled_at is not None and re.search(r"remind|reminder|yaad", text, re.IGNORECASE):
             return AssistantDecision(
-                intent="update_preference",
-                response="Theek hai, doctor appointments ke liye ek din pehle bhi yaad dilaunga.",
+                intent="create_reminder",
+                response="Main abhi poori tarah samajh nahi paya, lekin is samay ka reminder laga doon?",
                 proposed_actions=[
                     ProposedAction(
-                        action_type="update_preference",
-                        key="medical_appointment_reminder_minutes",
-                        value="1440",
+                        action_type="create_reminder",
+                        title=text.strip()[:80],
+                        scheduled_at=scheduled_at.isoformat(),
                     )
                 ],
             )
-        if re.search(r"usually|aksar|aam\s+taur|normally", lowered) and not re.search(
-            r"remind|reminder|yaad\s+dila", lowered
-        ):
-            return AssistantDecision(
-                intent="store_memory",
-                response="Theek hai, maine ise aapki routine ke roop mein yaad rakh liya.",
-                proposed_actions=[
-                    ProposedAction(
-                        action_type="store_memory",
-                        kind="routine",
-                        category="routine",
-                        content=text.strip(),
-                        confidence=1.0,
-                    )
-                ],
-            )
-        before = re.search(
-            r"\b(\d+|ek|do|teen)\s*(?:din|days?)\s*(?:pehle|before)\b",
-            lowered,
+        return AssistantDecision(
+            intent="answer_question",
+            response=("Abhi main aapka message samajh nahi paya. Thodi der baad dobara bhejein."),
         )
-        if before:
-            documents = repository.list_recent_documents(user.id, limit=1)
-            if documents and documents[0].extracted_dates:
-                amount = {"ek": 1, "do": 2, "teen": 3}.get(before.group(1), None)
-                days = amount if amount is not None else int(before.group(1))
-                try:
-                    due_date = datetime.fromisoformat(documents[0].extracted_dates[0]).date()
-                except ValueError:
-                    return AssistantDecision(
-                        intent="clarify",
-                        response="Document ki due date saaf nahi mili. Date dobara batayein.",
-                        missing_fields=["scheduled_at"],
-                    )
-                local_due = datetime.combine(
-                    due_date - timedelta(days=days),
-                    time(9, 0),
-                    tzinfo=ZoneInfo(user.timezone),
-                ).astimezone(timezone.utc)
-                return AssistantDecision(
-                    intent="create_reminder",
-                    response=f"Due date se {days} din pehle subah 9 baje reminder laga doon?",
-                    proposed_actions=[
-                        ProposedAction(
-                            action_type="create_reminder",
-                            title=f"{documents[0].document_type or documents[0].filename} due soon",
-                            scheduled_at=local_due.isoformat(),
-                            category="bill",
-                        )
-                    ],
-                )
-        return None
 
     @staticmethod
     def _normalize_timeline(
@@ -291,17 +261,19 @@ class AssistantService:
             (action for action in decision.proposed_actions if action.action_type == "create_timeline_event"),
             None,
         )
-        title = existing.title if existing and existing.title else (
-            "Doctor appointment" if re.search(r"doctor", text, re.IGNORECASE) else "Timeline event"
+        title = (
+            existing.title
+            if existing and existing.title
+            else ("Doctor appointment" if re.search(r"doctor", text, re.IGNORECASE) else "Timeline event")
         )
         action = (existing or ProposedAction(action_type="create_timeline_event")).model_copy(
             update={
                 "title": title,
                 "starts_at": existing.starts_at if existing and existing.starts_at else starts_at.isoformat(),
                 "ends_at": existing.ends_at if existing and existing.ends_at else ends_at.isoformat(),
-                "event_category": existing.event_category if existing and existing.event_category else (
-                    "medical_appointment" if re.search(r"doctor", text, re.IGNORECASE) else "personal"
-                ),
+                "event_category": existing.event_category
+                if existing and existing.event_category
+                else ("medical_appointment" if re.search(r"doctor", text, re.IGNORECASE) else "personal"),
             }
         )
         return decision.model_copy(
@@ -328,20 +300,21 @@ class AssistantService:
         memories = repository.list_memories(user.id)
         if not memories:
             return "Mere paas is baat ki koi stored source nahi hai."
-        query_words = {
-            word for word in re.findall(r"[a-z0-9]+", text.lower())
-            if len(word) > 2
-        }
-        memory = max(
-            memories,
-            key=lambda item: len(query_words & set(re.findall(r"[a-z0-9]+", item.content.lower()))),
+        query_tokens = tokenize(text)
+        ranked = sorted(
+            ((score(query_tokens, tokenize(item.content)), item) for item in memories),
+            key=lambda row: row[0],
+            reverse=True,
         )
+        best_score, memory = ranked[0]
+        if best_score <= 0:
+            # Nothing in the store actually matches the question. Citing the most
+            # recent memory anyway would be a confident wrong answer, so hand the
+            # turn back to the model instead.
+            return None
         source = repository.session.get(Message, memory.source_message_id)
         if source is None:
             return "Yeh memory stored hai, lekin iska original source message nahi mila."
         original = source.text or source.transcript or "[media message]"
         date = source.created_at.strftime("%d %b %Y")
-        return (
-            f"Aapne {date} ko kaha tha: “{original}”\n\n"
-            f"Isi source se maine yaad rakha: {memory.content}"
-        )
+        return f"Aapne {date} ko kaha tha: “{original}”\n\nIsi source se maine yaad rakha: {memory.content}"
