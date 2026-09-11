@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-
 from app.assistant.context import build_context
 from app.domain.messages import InboundMessage, MessageType
 from app.persistence.database import Database
