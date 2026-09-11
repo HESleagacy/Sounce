@@ -20,7 +20,9 @@ def upgrade() -> None:
     op.add_column("documents", sa.Column("document_type", sa.String(100), nullable=True))
     op.add_column("documents", sa.Column("extracted_dates", sa.JSON(), nullable=False, server_default="[]"))
     op.add_column("documents", sa.Column("extracted_amounts", sa.JSON(), nullable=False, server_default="[]"))
-    op.add_column("documents", sa.Column("extracted_entities", sa.JSON(), nullable=False, server_default="[]"))
+    op.add_column(
+        "documents", sa.Column("extracted_entities", sa.JSON(), nullable=False, server_default="[]")
+    )
 
 
 def downgrade() -> None:

@@ -1,4 +1,4 @@
-"""Create the initial Bol Bachchan schema."""
+"""Create the initial Sounce schema."""
 
 from alembic import op
 import sqlalchemy as sa

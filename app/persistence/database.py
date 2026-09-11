@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+
+
+def rowcount(result: Any) -> int:
+    """Rows affected by a DML statement.
+
+    ``Session.execute`` is typed as returning ``Result``, which has no
+    ``rowcount``; only the ``CursorResult`` a DML statement actually returns
+    does. This keeps the narrowing in one place instead of scattering casts.
+    """
+    return int(result.rowcount or 0)
 
 
 def create_database_engine(database_url: str) -> Engine:
