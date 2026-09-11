@@ -2,19 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-from sqlalchemy import select
+from zoneinfo import ZoneInfo
 
 from app.domain.messages import InboundMessage, MessageType, OutboundMessage
 from app.domain.preferences import next_allowed_time
-from app.domain.reminders import as_utc
-from app.domain.reminders import parse_natural_interval, parse_natural_schedule
+from app.domain.reminders import as_utc, parse_natural_interval, parse_natural_schedule
 from app.domain.timeline import Interval, find_conflicts, overlaps
 from app.persistence.database import Database
 from app.persistence.models import Base, Reminder
 from app.persistence.repositories import Repository
 from app.workers.reminder_worker import ReminderWorker
-from zoneinfo import ZoneInfo
+from sqlalchemy import select
 
 OWNER = "919876543210@s.whatsapp.net"
 
@@ -105,9 +103,7 @@ def test_due_reminder_is_delivered_to_the_self_chat(tmp_path: Path) -> None:
         reminder = session.get(Reminder, reminder_id)
         assert reminder.status == "delivered"
         assert reminder.delivered_at is not None
-        assert session.scalar(
-            select(Reminder).where(Reminder.id == reminder_id)
-        ).status == "delivered"
+        assert session.scalar(select(Reminder).where(Reminder.id == reminder_id)).status == "delivered"
 
 
 def test_future_reminder_is_not_delivered(tmp_path: Path) -> None:
@@ -165,7 +161,9 @@ def test_overlap_rule_matches_project_contract() -> None:
     base = datetime(2026, 8, 9, 16, 30, tzinfo=timezone.utc)
     event = Interval(title="Doctor", starts_at=base, ends_at=base + timedelta(hours=1))
 
-    assert overlaps(base + timedelta(minutes=30), base + timedelta(minutes=90), event.starts_at, event.ends_at)
+    assert overlaps(
+        base + timedelta(minutes=30), base + timedelta(minutes=90), event.starts_at, event.ends_at
+    )
     assert not overlaps(base + timedelta(hours=2), base + timedelta(hours=3), event.starts_at, event.ends_at)
     assert find_conflicts([event], base + timedelta(minutes=30)) == [event]
     assert find_conflicts([event], base + timedelta(hours=2)) == []
