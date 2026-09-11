@@ -28,7 +28,7 @@ def authorize() -> Path:
     result: dict[str, str] = {}
 
     class CallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if query.get("state", [""])[0] != state:
                 self.send_error(400, "Invalid OAuth state")
@@ -86,7 +86,7 @@ def authorize() -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Authorize Bol Bachchan for Google Calendar")
+    parser = argparse.ArgumentParser(description="Authorize Sounce for Google Calendar")
     parser.parse_args()
     authorize()
 

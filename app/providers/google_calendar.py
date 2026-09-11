@@ -99,7 +99,7 @@ class GoogleCalendarProvider:
             "summary": title,
             "start": {"dateTime": starts_at.isoformat(), "timeZone": timezone_name},
             "end": {"dateTime": ends_at.isoformat(), "timeZone": timezone_name},
-            "extendedProperties": {"private": {"managedBy": "bol-bachchan"}},
+            "extendedProperties": {"private": {"managedBy": "sounce"}},
         }
 
 

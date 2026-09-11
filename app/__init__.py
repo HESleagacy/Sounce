@@ -1,1 +1,1 @@
-"""Bol Bachchan application package."""
+"""Sounce application package."""
