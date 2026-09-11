@@ -22,6 +22,7 @@ CONFIRM_ACTIONS = {
     "cancel_reminder",
     "reschedule_reminder",
     "forget_memory",
+    "purge_all_data",
 }
 DEFAULT_EVENT_MINUTES = 60
 
@@ -40,6 +41,10 @@ class CalendarSync(Protocol):
 class ExecutionResult:
     response: str
     executed_actions: int
+    # Erasing everything cannot happen inside this transaction: the reply still
+    # has to be written against rows the purge is about to remove. The caller
+    # performs it after the confirmation has been delivered.
+    purge_requested: bool = False
 
 
 class ValidationFailure(Exception):
@@ -51,7 +56,10 @@ class ValidationFailure(Exception):
 class DecisionEngine:
     def __init__(self, pending_action_ttl_minutes: int, calendar: CalendarSync | None = None) -> None:
         self._pending_action_ttl_minutes = pending_action_ttl_minutes
-        self._calendar = calendar
+        # The engine never calls Calendar itself; it only needs to know whether
+        # syncing is configured so it can decide to write outbox rows. The live
+        # client belongs to CalendarWorker, which drains those rows with retries.
+        self._calendar_enabled = calendar is not None
 
     def execute(
         self,
@@ -66,7 +74,9 @@ class DecisionEngine:
 
         if decision.intent == "clarify" or decision.missing_fields:
             partial = [action.model_dump(mode="json") for action in decision.proposed_actions]
-            action_type = decision.proposed_actions[0].action_type if decision.proposed_actions else decision.intent
+            action_type = (
+                decision.proposed_actions[0].action_type if decision.proposed_actions else decision.intent
+            )
             repository.replace_pending_action(
                 user_id=user.id,
                 source_message_id=source_message.id,
@@ -120,10 +130,7 @@ class DecisionEngine:
                 "Action abhi poori tarah samajh nahi aayi. Date aur time dobara batayein.",
                 0,
             )
-        actions = [
-            ProposedAction.model_validate(raw)
-            for raw in pending.payload.get("proposed_actions", [])
-        ]
+        actions = [ProposedAction.model_validate(raw) for raw in pending.payload.get("proposed_actions", [])]
         try:
             actions, _conflict_response = self._prepare_deferred(actions, repository, user)
         except ValidationFailure as failure:
@@ -135,7 +142,8 @@ class DecisionEngine:
         for action in actions:
             executed += self._execute_confirmed_action(action, repository, user, action_source)
         repository.resolve_pending_action(pending)
-        return ExecutionResult(decision.response, executed)
+        purge_requested = any(action.action_type == "purge_all_data" for action in actions)
+        return ExecutionResult(decision.response, executed, purge_requested=purge_requested)
 
     def _execute_direct(
         self,
@@ -190,11 +198,18 @@ class DecisionEngine:
                 recurrence_interval=action.recurrence_interval,
                 category=action.category,
             )
-            reminder.calendar_event_id = self._sync_calendar(
-                action.title or "",
-                due_at,
-                due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES),
-                user.timezone,
+            self._enqueue_calendar(
+                repository,
+                user,
+                op="create",
+                entity_type="reminder",
+                entity=reminder,
+                payload={
+                    "title": action.title or "",
+                    "starts_at": due_at.isoformat(),
+                    "ends_at": (due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES)).isoformat(),
+                    "timezone": user.timezone,
+                },
             )
             return 1
         if action.action_type == "create_timeline_event":
@@ -209,42 +224,64 @@ class DecisionEngine:
                 category=action.event_category,
             )
             self._create_category_reminder(action, repository, user, source_message, starts_at)
-            event.calendar_event_id = self._sync_calendar(
-                action.title or "", starts_at, ends_at, user.timezone
+            self._enqueue_calendar(
+                repository,
+                user,
+                op="create",
+                entity_type="timeline_event",
+                entity=event,
+                payload={
+                    "title": action.title or "",
+                    "starts_at": starts_at.isoformat(),
+                    "ends_at": ends_at.isoformat(),
+                    "timezone": user.timezone,
+                },
             )
             return 1
         if action.action_type == "cancel_reminder":
-            reminder = (
-                repository.get_reminder(user.id, action.reminder_id)
-                if action.reminder_id is not None
-                else None
-            )
-            if reminder is None or not repository.cancel_reminder(user.id, action.reminder_id):
+            if action.reminder_id is None:
                 raise ValidationFailure("Yeh reminder ab pending nahi hai, isliye cancel nahi ho paya.")
-            if reminder.calendar_event_id:
-                self._delete_calendar_event(reminder.calendar_event_id)
+            existing = repository.get_reminder(user.id, action.reminder_id)
+            if existing is None or not repository.cancel_reminder(user.id, action.reminder_id):
+                raise ValidationFailure("Yeh reminder ab pending nahi hai, isliye cancel nahi ho paya.")
+            if existing.calendar_event_id or existing.calendar_sync_status == "pending":
+                self._enqueue_calendar(
+                    repository,
+                    user,
+                    op="delete",
+                    entity_type="reminder",
+                    entity=existing,
+                    payload={},
+                )
             return 1
         if action.action_type == "reschedule_reminder":
             due_at = parse_user_datetime(action.scheduled_at or "", user.timezone)
-            reminder = (
-                repository.get_reminder(user.id, action.reminder_id)
-                if action.reminder_id is not None
-                else None
-            )
-            if reminder is None or not repository.reschedule_reminder(user.id, action.reminder_id, due_at):
+            if action.reminder_id is None:
                 raise ValidationFailure("Yeh reminder pending nahi mila, isliye reschedule nahi hua.")
-            if reminder.calendar_event_id:
-                self._update_calendar_event(
-                    reminder.calendar_event_id,
-                    reminder.title,
-                    due_at,
-                    due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES),
-                    user.timezone,
+            existing = repository.get_reminder(user.id, action.reminder_id)
+            if existing is None or not repository.reschedule_reminder(user.id, action.reminder_id, due_at):
+                raise ValidationFailure("Yeh reminder pending nahi mila, isliye reschedule nahi hua.")
+            if existing.calendar_event_id or existing.calendar_sync_status == "pending":
+                self._enqueue_calendar(
+                    repository,
+                    user,
+                    op="update",
+                    entity_type="reminder",
+                    entity=existing,
+                    payload={
+                        "title": existing.title,
+                        "starts_at": due_at.isoformat(),
+                        "ends_at": (due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES)).isoformat(),
+                        "timezone": user.timezone,
+                    },
                 )
             return 1
         if action.action_type == "forget_memory":
             if action.memory_id is None or not repository.forget_memory(user.id, action.memory_id):
                 raise ValidationFailure("Yeh yaad nahi mili, isliye kuch delete nahi hua.")
+            return 1
+        if action.action_type == "purge_all_data":
+            # Deliberately a no-op here. See ExecutionResult.purge_requested.
             return 1
         return 0
 
@@ -350,36 +387,29 @@ class DecisionEngine:
                 timezone_name=user.timezone,
             )
 
-    def _sync_calendar(
-        self, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str
-    ) -> str | None:
-        if self._calendar is None:
-            return None
-        try:
-            return self._calendar.create_event(title, starts_at, ends_at, timezone_name)
-        except Exception:
-            log.exception("Calendar sync failed for %r; continuing without it", title)
-            return None
-
-    def _update_calendar_event(
+    def _enqueue_calendar(
         self,
-        event_id: str,
-        title: str,
-        starts_at: datetime,
-        ends_at: datetime,
-        timezone_name: str,
+        repository: Repository,
+        user: User,
+        op: str,
+        entity_type: str,
+        entity: object,
+        payload: dict[str, object],
     ) -> None:
-        if self._calendar is None:
-            return
-        try:
-            self._calendar.update_event(event_id, title, starts_at, ends_at, timezone_name)
-        except Exception:
-            log.exception("Calendar update failed for event %s", event_id)
+        """Record a Calendar operation in the same transaction as the local change.
 
-    def _delete_calendar_event(self, event_id: str) -> None:
-        if self._calendar is None:
+        This is the whole point of the outbox: the op row and the reminder row
+        commit together, so Calendar can be down for an hour without the two
+        drifting apart, and a remote create can never be lost by a failure to
+        persist its event id.
+        """
+        if not self._calendar_enabled:
             return
-        try:
-            self._calendar.delete_event(event_id)
-        except Exception:
-            log.exception("Calendar deletion failed for event %s", event_id)
+        repository.enqueue_calendar_op(
+            user_id=user.id,
+            op=op,
+            entity_type=entity_type,
+            entity_id=entity.id,  # type: ignore[attr-defined]
+            payload=payload,
+        )
+        entity.calendar_sync_status = "pending"  # type: ignore[attr-defined]

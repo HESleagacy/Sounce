@@ -3,16 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
-
 from app.assistant.decision_engine import DecisionEngine
 from app.assistant.schemas import AssistantDecision, ProposedAction
 from app.assistant.service import AssistantService
 from app.domain.messages import InboundMessage, MessageType, OutboundMessage
 from app.persistence.database import Database
-from app.persistence.models import Base, PendingAction, Reminder, TimelineEvent
+from app.persistence.models import Base, CalendarOp, PendingAction, Reminder, TimelineEvent
 from app.persistence.repositories import Repository
+from app.workers.calendar_worker import CalendarWorker
 from app.workers.message_worker import MessageWorker
+from sqlalchemy import select
 
 OWNER = "919876543210@s.whatsapp.net"
 
@@ -76,10 +76,10 @@ def make_worker(
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(database.engine)
     transport = FakeTransport()
-    assistant = AssistantService(
-        provider, DecisionEngine(pending_action_ttl_minutes=30, calendar=calendar)
+    assistant = AssistantService(provider, DecisionEngine(pending_action_ttl_minutes=30, calendar=calendar))
+    worker = MessageWorker(
+        database, assistant, transport, OWNER, "Asia/Kolkata", media_dir=tmp_path / "media"
     )
-    worker = MessageWorker(database, assistant, transport, OWNER, "Asia/Kolkata", media_dir=tmp_path / "media")
     return worker, database, transport
 
 
@@ -153,9 +153,7 @@ def test_past_reminder_time_is_rejected_deterministically(tmp_path: Path) -> Non
 
 def test_conflict_note_is_appended_from_timeline(tmp_path: Path) -> None:
     event_start = datetime.now(timezone.utc) + timedelta(days=1)
-    provider = FakeProvider(
-        [reminder_decision(event_start + timedelta(minutes=30), title="Call Ramesh")]
-    )
+    provider = FakeProvider([reminder_decision(event_start + timedelta(minutes=30), title="Call Ramesh")])
     worker, database, transport = make_worker(tmp_path, provider)
 
     with database.session() as session:
@@ -382,9 +380,7 @@ def test_event_category_creates_configured_advance_reminder(tmp_path: Path) -> N
         repository = Repository(session)
         user = repository.get_or_create_user(OWNER, "Asia/Kolkata")
         source = repository.add_inbound(user, inbound("pref", "one day before"))
-        repository.set_preference(
-            user.id, source.id, "medical_appointment_reminder_minutes", "1440"
-        )
+        repository.set_preference(user.id, source.id, "medical_appointment_reminder_minutes", "1440")
 
     worker.process(inbound("in-1", "Doctor appointment add karo"))
     worker.process(inbound("in-2", "Haan"))
@@ -395,33 +391,47 @@ def test_event_category_creates_configured_advance_reminder(tmp_path: Path) -> N
         assert reminder.due_at.replace(tzinfo=timezone.utc) == starts_at - timedelta(days=1)
 
 
+class FakeCalendar:
+    def __init__(self, fail_times: int = 0) -> None:
+        self.created: list[tuple] = []
+        self.updated: list[tuple] = []
+        self.deleted: list[str] = []
+        self.fail_times = fail_times
+
+    def _maybe_fail(self) -> None:
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("calendar unavailable")
+
+    def create_event(self, title, starts_at, ends_at, timezone_name):
+        self._maybe_fail()
+        self.created.append((title, starts_at, ends_at, timezone_name))
+        return f"google-event-{len(self.created)}"
+
+    def update_event(self, event_id, title, starts_at, ends_at, timezone_name):
+        self._maybe_fail()
+        self.updated.append((event_id, title, starts_at, ends_at, timezone_name))
+
+    def delete_event(self, event_id):
+        self._maybe_fail()
+        self.deleted.append(event_id)
+
+
 def test_calendar_event_id_is_reused_for_reschedule_and_cancel(tmp_path: Path) -> None:
-    class FakeCalendar:
-        def __init__(self) -> None:
-            self.created = []
-            self.updated = []
-            self.deleted = []
-
-        def create_event(self, title, starts_at, ends_at, timezone_name):
-            self.created.append((title, starts_at, ends_at, timezone_name))
-            return "google-event-1"
-
-        def update_event(self, event_id, title, starts_at, ends_at, timezone_name):
-            self.updated.append((event_id, title, starts_at, ends_at, timezone_name))
-
-        def delete_event(self, event_id):
-            self.deleted.append(event_id)
-
     calendar = FakeCalendar()
     original = datetime.now(timezone.utc) + timedelta(days=1)
     replacement = original + timedelta(hours=3)
     provider = FakeProvider([reminder_decision(original), confirmation_decision()])
     worker, database, _transport = make_worker(tmp_path, provider, calendar)
+    outbox = CalendarWorker(database, calendar, backoff_seconds=0)
+
     worker.process(inbound("cal-1", "Reminder set karo"))
     worker.process(inbound("cal-2", "Haan"))
+    assert outbox.drain_once() == 1
     with database.session() as session:
         reminder = session.scalar(select(Reminder))
         assert reminder.calendar_event_id == "google-event-1"
+        assert reminder.calendar_sync_status == "synced"
         reminder_id = reminder.id
 
     provider.decisions = [
@@ -440,6 +450,7 @@ def test_calendar_event_id_is_reused_for_reschedule_and_cancel(tmp_path: Path) -
     ]
     worker.process(inbound("cal-3", "Time badal do"))
     worker.process(inbound("cal-4", "Haan"))
+    outbox.drain_once()
     assert calendar.updated[0][0] == "google-event-1"
     assert len(calendar.created) == 1
 
@@ -447,15 +458,64 @@ def test_calendar_event_id_is_reused_for_reschedule_and_cancel(tmp_path: Path) -
         AssistantDecision(
             intent="cancel_reminder",
             response="Cancel kar doon?",
-            proposed_actions=[
-                ProposedAction(action_type="cancel_reminder", reminder_id=reminder_id)
-            ],
+            proposed_actions=[ProposedAction(action_type="cancel_reminder", reminder_id=reminder_id)],
         ),
         confirmation_decision(),
     ]
     worker.process(inbound("cal-5", "Reminder cancel karo"))
     worker.process(inbound("cal-6", "Haan"))
+    outbox.drain_once()
     assert calendar.deleted == ["google-event-1"]
+
+
+def test_calendar_outage_does_not_block_or_lose_the_local_reminder(tmp_path: Path) -> None:
+    """Local state commits regardless; the sync is retried until it lands."""
+    calendar = FakeCalendar(fail_times=2)
+    due_at = datetime.now(timezone.utc) + timedelta(days=1)
+    provider = FakeProvider([reminder_decision(due_at), confirmation_decision()])
+    worker, database, transport = make_worker(tmp_path, provider, calendar)
+    outbox = CalendarWorker(database, calendar, backoff_seconds=0)
+
+    worker.process(inbound("out-1", "Reminder set karo"))
+    worker.process(inbound("out-2", "Haan"))
+
+    # The user is told the reminder exists even though Calendar is down.
+    assert transport.sent[-1].text.endswith("Reminder laga diya.")
+    with database.session() as session:
+        reminder = session.scalar(select(Reminder))
+        assert reminder is not None and reminder.status == "pending"
+        assert reminder.calendar_sync_status == "pending"
+
+    assert outbox.drain_once() == 0  # first failure
+    assert outbox.drain_once() == 0  # second failure
+    assert outbox.drain_once() == 1  # recovers
+
+    with database.session() as session:
+        reminder = session.scalar(select(Reminder))
+        assert reminder.calendar_event_id == "google-event-1"
+        assert reminder.calendar_sync_status == "synced"
+    assert len(calendar.created) == 1
+
+
+def test_calendar_op_gives_up_and_is_marked_failed(tmp_path: Path) -> None:
+    calendar = FakeCalendar(fail_times=99)
+    due_at = datetime.now(timezone.utc) + timedelta(days=1)
+    provider = FakeProvider([reminder_decision(due_at), confirmation_decision()])
+    worker, database, _transport = make_worker(tmp_path, provider, calendar)
+    outbox = CalendarWorker(database, calendar, max_attempts=3, backoff_seconds=0)
+
+    worker.process(inbound("dead-1", "Reminder set karo"))
+    worker.process(inbound("dead-2", "Haan"))
+    for _ in range(3):
+        outbox.drain_once()
+
+    with database.session() as session:
+        reminder = session.scalar(select(Reminder))
+        assert reminder.calendar_sync_status == "failed"
+        assert reminder.status == "pending"  # the reminder itself still works
+        op = session.scalar(select(CalendarOp))
+        assert op.status == "failed"
+        assert "calendar unavailable" in op.last_error
 
 
 def test_canonical_timeline_range_is_filled_when_model_omits_actions(tmp_path: Path) -> None:
