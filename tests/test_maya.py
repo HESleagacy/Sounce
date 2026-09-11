@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 
-import httpx
-
 import app.providers.maya as maya_module
+import httpx
 from app.providers.maya import MayaProvider
 
 
@@ -75,9 +74,7 @@ def test_maya_error_falls_back_to_text() -> None:
         "https://tts.mayaresearch.ai/v1/tts",
         "bad-key",
         client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(401, json={"error": "invalid key"})
-            )
+            transport=httpx.MockTransport(lambda _request: httpx.Response(401, json={"error": "invalid key"}))
         ),
     )
 

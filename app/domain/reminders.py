@@ -65,7 +65,8 @@ def parse_natural_schedule(
     relative = re.search(r"\b(\d+)\s*(minute|min|minutes|hour|hours|ghanta|ghante)\b", lowered)
     if relative and re.search(r"baad|after|later", lowered):
         amount = int(relative.group(1))
-        delta = timedelta(hours=amount) if relative.group(2) in {"hour", "hours", "ghanta", "ghante"} else timedelta(minutes=amount)
+        in_hours = relative.group(2) in {"hour", "hours", "ghanta", "ghante"}
+        delta = timedelta(hours=amount) if in_hours else timedelta(minutes=amount)
         return (local_now + delta).astimezone(timezone.utc)
 
     time_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?\b", lowered)
@@ -76,12 +77,14 @@ def parse_natural_schedule(
     marker = time_match.group(3)
     if hour > 23 or minute > 59:
         return None
-    if marker == "pm" or any(word in lowered for word in ("shaam", "raat", "dopahar")):
-        if hour < 12:
-            hour += 12
-    elif marker == "am" or "subah" in lowered:
-        if hour == 12:
-            hour = 0
+    evening = marker == "pm" or any(word in lowered for word in ("shaam", "raat", "dopahar"))
+    morning = marker == "am" or "subah" in lowered
+    if evening and hour < 12:
+        hour += 12
+    elif morning and not evening and hour == 12:
+        # Midnight only when nothing in the phrase points at the evening, so
+        # "subah 12" becomes 00:00 while "12 pm" stays at noon.
+        hour = 0
 
     target_date = local_now.date()
     if "parso" in lowered or "day after tomorrow" in lowered:

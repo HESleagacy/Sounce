@@ -38,9 +38,12 @@ def test_normalizes_owner_self_chat_even_when_from_me() -> None:
 
 def test_rejects_non_owner_chat_and_sender() -> None:
     assert normalize_neonize_message(event(chat="120363@g.us"), "919876543210@s.whatsapp.net") is None
-    assert normalize_neonize_message(
-        event(sender="911111111111@s.whatsapp.net", is_from_me=False), "919876543210@s.whatsapp.net"
-    ) is None
+    assert (
+        normalize_neonize_message(
+            event(sender="911111111111@s.whatsapp.net", is_from_me=False), "919876543210@s.whatsapp.net"
+        )
+        is None
+    )
 
 
 def test_extracts_extended_text() -> None:

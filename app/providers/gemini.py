@@ -27,9 +27,7 @@ class GeminiProvider:
         self._model = model
 
     def interpret(self, message: str, context: str) -> AssistantDecision:
-        return self._generate(
-            [f"Context JSON:\n{context}\n\nLatest user message:\n{message}"]
-        )
+        return self._generate([f"Context JSON:\n{context}\n\nLatest user message:\n{message}"])
 
     def interpret_audio(self, audio: bytes, mime_type: str, context: str) -> AssistantDecision:
         from google.genai import types
@@ -50,9 +48,7 @@ class GeminiProvider:
     ) -> AssistantDecision:
         from google.genai import types
 
-        instruction = (
-            f"Context JSON:\n{context}\n\nThe user sent the attached file named {filename!r}."
-        )
+        instruction = f"Context JSON:\n{context}\n\nThe user sent the attached file named {filename!r}."
         if caption:
             instruction += f"\nTheir caption with it was:\n{caption}"
         else:
@@ -64,10 +60,7 @@ class GeminiProvider:
 
         localized = self._client.models.generate_content(
             model=self._model,
-            contents=[
-                f"Rewrite this WhatsApp reply entirely in BCP-47 language {language!r}:\n\n"
-                f"{response}"
-            ],
+            contents=f"Rewrite this WhatsApp reply entirely in BCP-47 language {language!r}:\n\n{response}",
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are a strict localization engine. Preserve the exact meaning, dates, "

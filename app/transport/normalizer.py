@@ -99,7 +99,7 @@ def normalize_neonize_message(event: Any, owner_jid: str) -> InboundMessage | No
     if conversation:
         text, message_type = conversation, MessageType.TEXT
     elif _has_field(message, "extendedTextMessage") and getattr(extended, "text", None):
-        text, message_type = extended.text, MessageType.TEXT
+        text, message_type = getattr(extended, "text", None), MessageType.TEXT
     elif _has_field(message, "imageMessage"):
         text, message_type = getattr(image, "caption", None), MessageType.IMAGE
         media_mime_type = getattr(image, "mimetype", None)

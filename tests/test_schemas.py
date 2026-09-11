@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.assistant.schemas import AudioDecision
+from pydantic import ValidationError
 
 
 def test_audio_decision_requires_a_transcript() -> None:

@@ -13,7 +13,12 @@ class Interval:
     ends_at: datetime
 
 
-def overlaps(new_start: datetime, new_end: datetime, existing_start: datetime, existing_end: datetime) -> bool:
+def overlaps(
+    new_start: datetime,
+    new_end: datetime,
+    existing_start: datetime,
+    existing_end: datetime,
+) -> bool:
     """Deterministic overlap rule from the project contract."""
     return as_utc(new_start) < as_utc(existing_end) and as_utc(new_end) > as_utc(existing_start)
 
