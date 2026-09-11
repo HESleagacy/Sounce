@@ -12,6 +12,7 @@ Intent = Literal[
     "forget_memory",
     "store_memory",
     "update_preference",
+    "purge_all_data",
     "answer_question",
     "document_received",
     "clarify",
@@ -25,6 +26,7 @@ ActionType = Literal[
     "cancel_reminder",
     "reschedule_reminder",
     "forget_memory",
+    "purge_all_data",
 ]
 
 
