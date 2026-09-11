@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Hash-pinned lock, generated from pyproject.toml with:
+#   pip-compile --generate-hashes --strip-extras --output-file=requirements.lock pyproject.toml
+# --require-hashes makes the build fail rather than silently install something else.
+COPY requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
 
