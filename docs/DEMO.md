@@ -1,6 +1,6 @@
 # Demo Readiness Checklist
 
-Complete this checklist after the implementation phases and before presenting Bol Bachchan.
+Complete this checklist after the implementation phases and before presenting Sounce.
 
 ## Resolved Setup Findings
 
@@ -72,38 +72,54 @@ python -m app.main --self-chat-check
 
 ## Reviewer Readiness
 
-Complete these after the live Phase 3-6 checks and before final submission.
+Status is kept honest here: a box is checked only when the thing exists and is
+covered by a test or a document you can open.
 
-- [ ] Add `ARCHITECTURE.md` describing boundaries, data flow, workers, and deterministic execution.
-- [ ] Add `SECURITY.md` covering owner allowlisting, `@lid` validation, deduplication, loop prevention, media limits, and secret handling.
-- [ ] Add architecture decision records for SQLite, structured Gemini decisions, database-backed workers, and optional integrations.
-- [ ] Add a threat model covering spoofed messages, replay, prompt injection, malicious documents, leaked credentials, and provider outages.
-- [ ] Document failure modes and recovery behavior for WhatsApp, Gemini, SQLite, reminder delivery, Maya, and Google Calendar.
-- [ ] Add CI for tests, linting, type checks, compilation, and Alembic migration-drift detection.
-- [ ] Pin production dependencies exactly and document the dependency-update process.
-- [ ] Add structured logging with correlation identifiers for WhatsApp and database records.
-- [ ] Add retry, timeout, and backoff policies for external providers.
-- [ ] Add graceful shutdown tests for message and reminder workers.
-- [ ] Add a health endpoint or health command covering the database and worker state.
-- [ ] Add database backup, restore, export, and forget workflows.
-- [ ] Add an integration-test matrix for text, reminders, voice notes, documents, restart recovery, and provider failures.
-- [ ] Add a reproducible demo script with expected input, output, and verification steps.
-- [ ] Document known limitations honestly, including single-instance SQLite operation and optional-provider credential requirements.
-- [ ] State any required AI-tool disclosure according to the submission or review policy.
+**Done**
 
-## Required Provider Acceptance
+- [x] [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — boundaries, data flow, workers, and the
+      deterministic-execution contract.
+- [x] [`docs/THREAT-MODEL.md`](THREAT-MODEL.md) — owner allowlisting, prompt injection,
+      malicious documents, SSRF, credential handling, and an explicit
+      known-gaps table.
+- [x] Design decisions recorded with their rationale (SQLite, structured Gemini
+      decisions, database-backed workers, lexical retrieval over embeddings) in
+      `ARCHITECTURE.md`. Not formal one-per-file ADRs.
+- [x] [`docs/OPERATIONS.md`](OPERATIONS.md) — failure modes and recovery runbooks for
+      WhatsApp, the inbox, reminder delivery, and Calendar.
+- [x] Dependencies pinned exactly with hashes in `requirements.lock`; the
+      regeneration command is documented and the Docker build uses
+      `--require-hashes`.
+- [x] Retry, timeout, and backoff for the Calendar outbox, the durable inbox,
+      and reminder delivery, each with an attempt budget and a terminal state.
+- [x] `/live` and `/ready` endpoints plus `sounce health`, checking the
+      database, migration head, worker liveness, backlog, and WhatsApp
+      connectivity. Covered by `tests/test_health.py`.
+- [x] Backup, restore, export, and erase workflows — `sounce export`,
+      `sounce purge`, `sounce retention`, plus in-chat erase. Covered by
+      `tests/test_privacy.py` and `tests/test_cli.py`.
+- [x] Alembic migration-drift detection as a test (`tests/test_migrations.py`),
+      including reversibility.
+- [x] Integration coverage for text, reminders, voice notes, documents, restart
+      recovery, queue overflow, crash-mid-delivery, and provider failures —
+      150 tests, all with fakes at the provider boundary.
+- [x] Known limitations documented honestly, including single-instance SQLite
+      operation, optional-provider credentials, and the at-most-one-duplicate
+      delivery window.
+- [x] Formatter, linter, and type checker configured and passing
+      (`ruff`, `mypy`), with a coverage floor.
 
-- [ ] Configure the real Maya API URL, key, and native-language voice.
-- [ ] Verify Maya returns or is converted to WhatsApp-compatible OGG/Opus audio.
-- [ ] Change `response_modality` conversationally to voice.
-- [ ] Receive a real Maya-generated WhatsApp voice-note response.
-- [ ] Verify Maya failure falls back to a text response.
-- [ ] Configure Google OAuth client credentials and Calendar scope.
-- [ ] Complete authorization and securely persist a refresh token.
-- [ ] Create a confirmed reminder and verify its Google Calendar event.
-- [ ] Create a timeline event and verify Calendar synchronization.
-- [ ] Cancel or reschedule an item and verify Calendar stays consistent.
-- [ ] Verify retries do not create duplicate Calendar events.
+**Still open**
+
+- [ ] CI workflow running tests, lint, type checks, and migration drift on
+      every push. The checks all run locally today; nothing enforces them.
+- [ ] Structured logging with correlation identifiers linking a WhatsApp
+      message id to the rows it produced.
+- [ ] Graceful-shutdown tests for the workers.
+- [ ] Live provider acceptance — see the section below. Every provider path is
+      currently proven against a fake, not against the real service.
+- [ ] A recorded demo asset for the README.
+- [ ] State any required AI-tool disclosure according to the submission policy.
 
 ## Canonical Full Demo Runbook
 

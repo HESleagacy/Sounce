@@ -1,12 +1,12 @@
-# Bol Bachchan
+# Sounce
 
 > Bas bol do. Baaki yaad rahega.
 
 ## Product
 
-Bol Bachchan turns WhatsApp's **Message Yourself** chat into a multilingual personal
+Sounce turns WhatsApp's **Message Yourself** chat into a multilingual personal
 memory and timeline. People continue sending themselves thoughts, reminders, links,
-documents, appointments, and personal facts. Bol Bachchan understands those messages,
+documents, appointments, and personal facts. Sounce understands those messages,
 asks when context is missing, remembers useful information with provenance, and performs
 confirmed actions through deterministic application code.
 

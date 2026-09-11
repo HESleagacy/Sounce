@@ -1,4 +1,4 @@
-# Bol Bachchan
+# Sounce
 
 > Bas bol do. Baaki yaad rahega.
 
@@ -12,7 +12,7 @@ code remain available but are validated separately from the text-first contract.
 
 ## Implementation Plan
 
-Bol Bachchan will replace the existing PBCTF bot functionality. The project will remain a single deployable Python application, while keeping WhatsApp, AI, persistence, and scheduling behind clear internal boundaries.
+Sounce will replace the existing PBCTF bot functionality. The project will remain a single deployable Python application, while keeping WhatsApp, AI, persistence, and scheduling behind clear internal boundaries.
 
 The first milestone will implement one complete interaction:
 
@@ -48,7 +48,7 @@ Gemini interpretation:
   "requires_confirmation": true
 }
 
-Bol Bachchan:
+Sounce:
 Kal shaam 5 baje Ramesh ko call karne ka reminder laga doon?
 
 User: Haan
@@ -62,7 +62,7 @@ Gemini interprets the human request. Python validates and executes it.
 ## Target Structure
 
 ```text
-bol-bachchan/
+sounce/
 |-- app/
 |   |-- main.py
 |   |-- config.py
@@ -305,7 +305,7 @@ Self-chat is the first technical feasibility check. Neonize behavior must be ver
 - quoted messages
 - reconnect and replay behavior
 
-The transport must maintain message-ID deduplication and identify known outbound messages so Bol Bachchan never responds to its own responses.
+The transport must maintain message-ID deduplication and identify known outbound messages so Sounce never responds to its own responses.
 
 Only the configured owner JID should be accepted in V1.
 
@@ -417,7 +417,7 @@ Example:
 New reminder: tomorrow at 5:00 PM
 Existing event: 4:30 PM to 5:30 PM
 
-Bol Bachchan:
+Sounce:
 Kal 5 baje aapki doctor appointment bhi hai. Ramesh ko call karne ka reminder appointment ke baad rakh doon?
 ```
 
@@ -544,7 +544,7 @@ The preference is changed through conversation.
 
 ### Understand Context
 
-The user uploads a document without instructions. Bol Bachchan understands what it can, describes it briefly, and asks what the user wants instead of guessing.
+The user uploads a document without instructions. Sounce understands what it can, describes it briefly, and asks what the user wants instead of guessing.
 
 ## Guiding Principle
 
