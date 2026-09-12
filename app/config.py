@@ -63,6 +63,10 @@ class Settings(BaseSettings):
 
     # Readiness
     health_backlog_threshold: int = Field(default=500, ge=1)
+    # How long WhatsApp may stay disconnected before /live reports the process
+    # wedged and the watchdog restarts it. Must comfortably exceed a QR pairing
+    # cycle, or first-time pairing restarts out from under the person scanning.
+    health_stall_seconds: int = Field(default=300, ge=30)
 
     @field_validator("owner_jid")
     @classmethod

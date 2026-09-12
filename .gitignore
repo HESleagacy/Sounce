@@ -15,6 +15,12 @@ neonize.db
 
 # Environment and deployment secrets - NEVER commit
 .env
+# .env alone does not cover the copies that get made before editing it;
+# .env.bak-2026-09-12 was sitting untracked and one `git add -A` from
+# being committed. The .example is the one file here that is safe.
+.env.*
+!.env.example
+*.bak
 PROD.md
 
 # IDE and tooling

@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -47,7 +50,42 @@ class HealthProbes:
     transport: Any = None
     provider_configured: bool = False
     backlog_threshold: int = 500
+    stall_seconds: int = 300
     _migration_head: str | None = field(default=None, repr=False)
+    _disconnected_since: float | None = field(default=None, repr=False)
+
+    def liveness(self) -> tuple[bool, dict[str, Any]]:
+        """Fail only on states the process cannot get itself out of.
+
+        A disconnect is normal and self-healing, so this stays green while the
+        reconnect loop is working. But neonize's connect() does not always
+        return after a login timeout, and when it does not, connect_with_retry
+        never gets to iterate: the process sits there indefinitely, connected
+        to nothing, with its workers still alive. Nothing else notices that,
+        so a disconnect that outlasts the grace period is reported dead.
+        """
+        if self.transport is None:
+            return True, {"status": "live", "detail": "no transport"}
+        try:
+            connected = bool(self.transport.is_connected())
+        except Exception:
+            connected = False
+
+        now = time.monotonic()
+        if connected:
+            self._disconnected_since = None
+            return True, {"status": "live", "detail": "connected"}
+
+        if self._disconnected_since is None:
+            self._disconnected_since = now
+        stalled = int(now - self._disconnected_since)
+        if stalled < self.stall_seconds:
+            return True, {"status": "live", "detail": "reconnecting", "stalled_seconds": stalled}
+        return False, {
+            "status": "stalled",
+            "detail": "disconnected past the reconnect grace period",
+            "stalled_seconds": stalled,
+        }
 
     def check(self) -> tuple[bool, dict[str, Any]]:
         checks: dict[str, Any] = {}
@@ -137,7 +175,8 @@ def build_handler(probes: HealthProbes) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             route = self.path.split("?", 1)[0].rstrip("/") or "/"
             if route in ("/", "/live", "/health"):
-                self._respond(200, {"status": "live"})
+                alive, payload = probes.liveness()
+                self._respond(200 if alive else 503, payload)
                 return
             if route == "/ready":
                 ready, payload = probes.check()
@@ -157,6 +196,35 @@ def build_handler(probes: HealthProbes) -> type[BaseHTTPRequestHandler]:
             pass
 
     return _Handler
+
+
+def start_stall_watchdog(probes: HealthProbes, interval_seconds: int = 30) -> threading.Thread:
+    """Exit the process once liveness reports it is wedged.
+
+    docker's restart policy only reacts to a process exiting -- an unhealthy
+    container is left running -- so reporting the stall on /live is not enough
+    on its own to recover locally. The main thread is blocked inside neonize's
+    connect(), a cgo call a signal will not interrupt, so this exits the hard
+    way and lets the restart policy bring the process back.
+    """
+
+    def _watch() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                alive, payload = probes.liveness()
+            except Exception:
+                log.exception("Stall watchdog check failed")
+                continue
+            if not alive:
+                log.critical("Stalled for %ss; exiting to be restarted", payload.get("stalled_seconds"))
+                logging.shutdown()
+                sys.stderr.flush()
+                os._exit(1)
+
+    thread = threading.Thread(target=_watch, daemon=True, name="stall-watchdog")
+    thread.start()
+    return thread
 
 
 def start_health_server(port: int, probes: HealthProbes) -> HTTPServer:

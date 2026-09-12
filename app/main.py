@@ -15,7 +15,7 @@ from alembic.config import Config
 from app.assistant.decision_engine import DecisionEngine
 from app.assistant.service import AssistantService
 from app.config import Settings, get_settings
-from app.health import HealthProbes, start_health_server
+from app.health import HealthProbes, start_health_server, start_stall_watchdog
 from app.persistence.database import Database
 from app.persistence.repositories import Repository
 from app.privacy import purge_user_data, write_export
@@ -37,6 +37,11 @@ ALEMBIC_INI = Path(__file__).parents[1] / "alembic.ini"
 def run_migrations(database_url: str) -> None:
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("sqlalchemy.url", database_url)
+    # env.py calls fileConfig(), which replaces the root logger's handlers and
+    # level with alembic.ini's ([logger_root] level = WARN). Running migrations
+    # in-process therefore silenced every log.info() in the app and reformatted
+    # the rest. Alembic's documented opt-out for programmatic use.
+    config.attributes["configure_logger"] = False
     command.upgrade(config, "head")
 
 
@@ -44,14 +49,22 @@ def connect_with_retry(
     transport: NeonizeAdapter,
     initial_seconds: int,
     max_seconds: int,
+    healthy_session_seconds: int = 60,
 ) -> None:
     delay = initial_seconds
     while True:
+        connected_at = time.monotonic()
         try:
             transport.connect()
             log.warning("WhatsApp connection ended; reconnecting in %s seconds", delay)
         except Exception:
             log.exception("WhatsApp connection failed; retrying in %s seconds", delay)
+        # A session that stayed up is evidence the backoff has done its job.
+        # Without this the delay only ever doubles, so a link that drops a few
+        # times settles at max_seconds and stays there for the life of the
+        # process, even once it is reconnecting healthily.
+        if time.monotonic() - connected_at >= healthy_session_seconds:
+            delay = initial_seconds
         time.sleep(delay)
         delay = min(delay * 2, max_seconds)
 
@@ -89,9 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging(settings: Settings) -> None:
+    # force=True so this stays authoritative no matter what a dependency has
+    # already done to the root logger -- neonize calls basicConfig() at import
+    # time, and basicConfig is otherwise a no-op once root has a handler.
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
     )
 
 
@@ -251,21 +268,21 @@ def run_assistant(settings: Settings) -> None:
         interval_hours=settings.retention_interval_hours,
     )
 
+    probes = HealthProbes(
+        database=database,
+        alembic_ini=ALEMBIC_INI,
+        message_worker=message_worker,
+        reminder_worker=reminder_worker,
+        calendar_worker=calendar_worker,
+        transport=transport,
+        provider_configured=True,
+        backlog_threshold=settings.health_backlog_threshold,
+        stall_seconds=settings.health_stall_seconds,
+    )
     port = os.environ.get("PORT")
     if port:
-        start_health_server(
-            int(port),
-            HealthProbes(
-                database=database,
-                alembic_ini=ALEMBIC_INI,
-                message_worker=message_worker,
-                reminder_worker=reminder_worker,
-                calendar_worker=calendar_worker,
-                transport=transport,
-                provider_configured=True,
-                backlog_threshold=settings.health_backlog_threshold,
-            ),
-        )
+        start_health_server(int(port), probes)
+    start_stall_watchdog(probes)
 
     transport.set_message_handler(message_worker.enqueue)
     message_worker.start()
