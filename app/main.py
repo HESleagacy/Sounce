@@ -15,7 +15,7 @@ from alembic.config import Config
 from app.assistant.decision_engine import DecisionEngine
 from app.assistant.service import AssistantService
 from app.config import Settings, get_settings
-from app.health import HealthProbes, start_health_server
+from app.health import HealthProbes, start_health_server, start_stall_watchdog
 from app.persistence.database import Database
 from app.persistence.repositories import Repository
 from app.privacy import purge_user_data, write_export
@@ -268,21 +268,21 @@ def run_assistant(settings: Settings) -> None:
         interval_hours=settings.retention_interval_hours,
     )
 
+    probes = HealthProbes(
+        database=database,
+        alembic_ini=ALEMBIC_INI,
+        message_worker=message_worker,
+        reminder_worker=reminder_worker,
+        calendar_worker=calendar_worker,
+        transport=transport,
+        provider_configured=True,
+        backlog_threshold=settings.health_backlog_threshold,
+        stall_seconds=settings.health_stall_seconds,
+    )
     port = os.environ.get("PORT")
     if port:
-        start_health_server(
-            int(port),
-            HealthProbes(
-                database=database,
-                alembic_ini=ALEMBIC_INI,
-                message_worker=message_worker,
-                reminder_worker=reminder_worker,
-                calendar_worker=calendar_worker,
-                transport=transport,
-                provider_configured=True,
-                backlog_threshold=settings.health_backlog_threshold,
-            ),
-        )
+        start_health_server(int(port), probes)
+    start_stall_watchdog(probes)
 
     transport.set_message_handler(message_worker.enqueue)
     message_worker.start()

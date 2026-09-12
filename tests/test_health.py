@@ -147,7 +147,9 @@ def test_live_and_ready_are_separate_endpoints(tmp_path: Path) -> None:
     server = start_health_server(0, probes)
     port = server.server_address[1]
     try:
-        assert _get(port, "/live") == (200, {"status": "live"})
+        status, payload = _get(port, "/live")
+        assert (status, payload["status"]) == (200, "live")
+        assert payload["detail"] == "reconnecting"
         # Not ready, but still alive: take it out of rotation, do not restart it.
         status, payload = _get(port, "/ready")
         assert status == 503
@@ -168,3 +170,25 @@ def test_ready_returns_200_when_everything_is_healthy(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_live_fails_once_a_disconnect_outlasts_the_grace_period(tmp_path: Path) -> None:
+    """A wedged connect() leaves the process disconnected forever; /live must say so."""
+    probes = make_probes(tmp_path, transport=StubTransport(connected=False), stall_seconds=0)
+    alive, payload = probes.liveness()
+    assert (alive, payload["status"]) == (False, "stalled")
+
+
+def test_live_recovers_and_rearms_after_reconnecting(tmp_path: Path) -> None:
+    transport = StubTransport(connected=False)
+    probes = make_probes(tmp_path, transport=transport, stall_seconds=0)
+    assert probes.liveness()[0] is False
+
+    transport._connected = True
+    assert probes.liveness()[0] is True
+
+    # The stall clock restarts from the new disconnect, not the original one.
+    transport._connected = False
+    probes.stall_seconds = 3600
+    alive, payload = probes.liveness()
+    assert (alive, payload["detail"]) == (True, "reconnecting")
