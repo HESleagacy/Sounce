@@ -37,6 +37,11 @@ ALEMBIC_INI = Path(__file__).parents[1] / "alembic.ini"
 def run_migrations(database_url: str) -> None:
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("sqlalchemy.url", database_url)
+    # env.py calls fileConfig(), which replaces the root logger's handlers and
+    # level with alembic.ini's ([logger_root] level = WARN). Running migrations
+    # in-process therefore silenced every log.info() in the app and reformatted
+    # the rest. Alembic's documented opt-out for programmatic use.
+    config.attributes["configure_logger"] = False
     command.upgrade(config, "head")
 
 
@@ -89,9 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _configure_logging(settings: Settings) -> None:
+    # force=True so this stays authoritative no matter what a dependency has
+    # already done to the root logger -- neonize calls basicConfig() at import
+    # time, and basicConfig is otherwise a no-op once root has a handler.
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
     )
 
 
