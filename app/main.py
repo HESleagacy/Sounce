@@ -49,14 +49,22 @@ def connect_with_retry(
     transport: NeonizeAdapter,
     initial_seconds: int,
     max_seconds: int,
+    healthy_session_seconds: int = 60,
 ) -> None:
     delay = initial_seconds
     while True:
+        connected_at = time.monotonic()
         try:
             transport.connect()
             log.warning("WhatsApp connection ended; reconnecting in %s seconds", delay)
         except Exception:
             log.exception("WhatsApp connection failed; retrying in %s seconds", delay)
+        # A session that stayed up is evidence the backoff has done its job.
+        # Without this the delay only ever doubles, so a link that drops a few
+        # times settles at max_seconds and stays there for the life of the
+        # process, even once it is reconnecting healthily.
+        if time.monotonic() - connected_at >= healthy_session_seconds:
+            delay = initial_seconds
         time.sleep(delay)
         delay = min(delay * 2, max_seconds)
 
